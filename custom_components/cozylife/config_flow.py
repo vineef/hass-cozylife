@@ -123,9 +123,12 @@ class CozyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
 
             subnet = _get_subnet(start_ip)
 
-            # Abort if this subnet hub already exists
-            await self.async_set_unique_id(subnet)
-            self._abort_if_unique_id_configured()
+            # Check if a hub entry for this subnet already exists
+            existing_entry = None
+            for entry in self._async_current_entries():
+                if entry.data.get(CONF_SUBNET) == subnet:
+                    existing_entry = entry
+                    break
 
             # Scan
             devices = await self.hass.async_add_executor_job(
@@ -139,6 +142,34 @@ class CozyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
                     data_schema=STEP_USER_DATA_SCHEMA,
                     errors=errors,
                 )
+
+            if existing_entry is not None:
+                existing_dids = {d["did"] for d in existing_entry.data.get(CONF_DEVICES, [])}
+                new_devices = [
+                    d for d in devices
+                    if d["did"] not in existing_dids
+                ]
+
+                if not new_devices:
+                    return self.async_abort(reason="no_new_devices_found")
+
+                updated_devices = list(existing_entry.data.get(CONF_DEVICES, [])) + new_devices
+                self.hass.config_entries.async_update_entry(
+                    existing_entry,
+                    data={
+                        **existing_entry.data,
+                        CONF_DEVICES: updated_devices,
+                        "start_ip": start_ip,
+                        "end_ip": end_ip,
+                    },
+                )
+                self.hass.async_create_task(
+                    self.hass.config_entries.async_reload(existing_entry.entry_id)
+                )
+                return self.async_abort(reason="device_added_to_hub")
+
+            await self.async_set_unique_id(subnet)
+            self._abort_if_unique_id_configured()
 
             return self.async_create_entry(
                 title=f"CozyLife Hub ({subnet}.0/24)",
